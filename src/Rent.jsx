@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../supabase";
-import { Filter, Calendar, Home, User, DollarSign, CheckCircle, AlertCircle, X, Search } from "lucide-react";
+import {
+  Calendar, Home, User, DollarSign,
+  CheckCircle, AlertCircle, X, Search
+} from "lucide-react";
 
-/* ================= UTILITIES ================= */
+/* ================= DATE UTILS ================= */
 
 function toMonthString(date) {
   return date.toISOString().slice(0, 7);
@@ -11,22 +14,23 @@ function toMonthString(date) {
 function addMonths(date, n) {
   const d = new Date(date);
   d.setMonth(d.getMonth() + n);
+  d.setDate(1);
   return d;
 }
 
 function monthsBetween(start, end) {
-  const result = [];
+  const months = [];
   const current = new Date(start);
-  // Reset days to 1 to avoid month skipping issues
-  current.setDate(1); 
+  current.setDate(1);
+
   const endDate = new Date(end);
   endDate.setDate(1);
 
   while (current <= endDate) {
-    result.push(toMonthString(current));
+    months.push(toMonthString(current));
     current.setMonth(current.getMonth() + 1);
   }
-  return result;
+  return months;
 }
 
 /* ================= COMPONENT ================= */
@@ -40,14 +44,16 @@ export default function Rent() {
   const [filters, setFilters] = useState({
     tenantId: "",
     room: "",
-    month: toMonthString(new Date())
+    month: "" // optional, not mandatory
   });
 
   /* ================= LOAD ================= */
 
   async function load() {
     setIsLoading(true);
-    const t = await supabase.from("tenants").select("*").eq("is_active", true);
+
+    // 🔑 IMPORTANT: load ALL tenants (active + past)
+    const t = await supabase.from("tenants").select("*");
     const r = await supabase.from("rooms").select("*");
     const p = await supabase.from("rent_payments").select("*");
 
@@ -67,20 +73,29 @@ export default function Rent() {
   }
 
   function paymentFor(tenantId, month) {
-    return payments.find(p => p.tenant_id === tenantId && p.month === month);
+    return payments.find(
+      p => p.tenant_id === tenantId && p.month === month
+    );
   }
 
   function dueMonths(tenant) {
-    const join = new Date(tenant.join_date);
-    // Logic: First rent due next month after joining (adjust if needed)
-    const firstDue = addMonths(join, 0); 
-    const selectedMonthEnd = new Date(filters.month + "-01");
-    // Only generate rows up to selected filter month
-    if (firstDue > selectedMonthEnd) return [];
-    return monthsBetween(firstDue, selectedMonthEnd);
+    if (!tenant.join_date) return [];
+
+    const joinDate = new Date(tenant.join_date);
+
+    // 🔑 First due = NEXT month after join
+    const firstDue = addMonths(joinDate, 1);
+
+    const endMonth = filters.month
+      ? new Date(filters.month + "-01")
+      : new Date();
+
+    if (firstDue > endMonth) return [];
+
+    return monthsBetween(firstDue, endMonth);
   }
 
-  /* ================= BUILD ROWS ================= */
+  /* ================= BUILD LEDGER ================= */
 
   const rows = [];
 
@@ -91,29 +106,28 @@ export default function Rent() {
     const months = dueMonths(tenant);
 
     months.forEach(month => {
-      // Apply Month Filter Strictly
       if (filters.month && month !== filters.month) return;
 
       const payment = paymentFor(tenant.id, month);
-      
-      // Calculate Due Date based on month
-      const [y, m] = month.split('-');
-      const dueDate = new Date(y, m - 1, new Date(tenant.join_date).getDate());
-      
+      const amount = perPersonRent(tenant.room_number);
+
+      const [y, m] = month.split("-");
+      const dueDate = new Date(y, m - 1, 5); // fixed due date (5th of month)
+
       const today = new Date();
       const isOverdue = !payment && today > dueDate;
-      
+
       const daysOverdue = isOverdue
-          ? Math.floor((today - dueDate) / (1000 * 60 * 60 * 24))
-          : 0;
+        ? Math.floor((today - dueDate) / (1000 * 60 * 60 * 24))
+        : 0;
 
       rows.push({
         tenant,
         month,
         payment,
+        amount,
         dueDate,
-        daysOverdue,
-        amount: perPersonRent(tenant.room_number)
+        daysOverdue
       });
     });
   });
@@ -121,7 +135,9 @@ export default function Rent() {
   /* ================= ACTION ================= */
 
   async function markPaid(row) {
-    if(!window.confirm(`Confirm payment of ₹${row.amount} for ${row.tenant.name}?`)) return;
+    if (!window.confirm(
+      `Confirm ₹${row.amount} payment for ${row.tenant.name} (${row.month})`
+    )) return;
 
     await supabase.from("rent_payments").insert({
       tenant_id: row.tenant.id,
@@ -134,80 +150,63 @@ export default function Rent() {
     load();
   }
 
-  const clearFilters = () => setFilters({ tenantId: "", room: "", month: toMonthString(new Date()) });
-  const hasFilters = filters.tenantId || filters.room;
+  const clearFilters = () =>
+    setFilters({ tenantId: "", room: "", month: "" });
+
+  const hasFilters = filters.tenantId || filters.room || filters.month;
+
+  /* ================= UI ================= */
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6 font-sans text-slate-900">
-      
+    <div className="min-h-screen bg-slate-50 p-6">
+
       {/* HEADER */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
-          <div className="p-2 bg-indigo-600 rounded-lg shadow-lg shadow-indigo-500/20">
-            <DollarSign className="w-6 h-6 text-white" />
-          </div>
-          Rent Records
-        </h1>
-        <p className="text-slate-500 mt-2 ml-14">Filter and track payment history across all tenants.</p>
-      </div>
-
-      {/* FILTER BAR */}
-      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 mb-8 flex flex-col md:flex-row gap-4 items-end md:items-center justify-between">
-        
-        <div className="flex flex-col md:flex-row gap-4 w-full">
-          {/* Tenant Filter */}
-          <div className="relative group flex-1">
-            <div className="absolute left-3 top-2.5 text-slate-400 group-focus-within:text-indigo-500 transition-colors">
-              <User className="w-4 h-4" />
-            </div>
-            <select
-              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none font-medium text-slate-700 cursor-pointer appearance-none"
-              value={filters.tenantId}
-              onChange={e => setFilters({ ...filters, tenantId: e.target.value })}
-            >
-              <option value="">All Tenants</option>
-              {tenants.map(t => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Room Filter */}
-          <div className="relative group flex-1">
-            <div className="absolute left-3 top-2.5 text-slate-400 group-focus-within:text-indigo-500 transition-colors">
-              <Home className="w-4 h-4" />
-            </div>
-            <select
-              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none font-medium text-slate-700 cursor-pointer appearance-none"
-              value={filters.room}
-              onChange={e => setFilters({ ...filters, room: e.target.value })}
-            >
-              <option value="">All Rooms</option>
-              {rooms.map(r => (
-                <option key={r.id} value={r.room_number}>Room {r.room_number}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Month Filter */}
-          <div className="relative group flex-1">
-            <div className="absolute left-3 top-2.5 text-slate-400 group-focus-within:text-indigo-500 transition-colors">
-              <Calendar className="w-4 h-4" />
-            </div>
-            <input
-              type="month"
-              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none font-medium text-slate-700 cursor-pointer"
-              value={filters.month}
-              onChange={e => setFilters({ ...filters, month: e.target.value })}
-            />
-          </div>
+      <h1 className="text-3xl font-bold flex items-center gap-3 mb-6">
+        <div className="p-2 bg-indigo-600 rounded-lg">
+          <DollarSign className="w-6 h-6 text-white" />
         </div>
+        Rent Ledger
+      </h1>
 
-        {/* Clear Button */}
+      {/* FILTERS */}
+      <div className="bg-white p-4 rounded-xl border mb-6 flex gap-4 flex-wrap">
+        <select
+          className="border p-2 rounded"
+          value={filters.tenantId}
+          onChange={e => setFilters({ ...filters, tenantId: e.target.value })}
+        >
+          <option value="">All Tenants</option>
+          {tenants.map(t => (
+            <option key={t.id} value={t.id}>
+              {t.name} {!t.is_active && "(Past)"}
+            </option>
+          ))}
+        </select>
+
+        <select
+          className="border p-2 rounded"
+          value={filters.room}
+          onChange={e => setFilters({ ...filters, room: e.target.value })}
+        >
+          <option value="">All Rooms</option>
+          {rooms.map(r => (
+            <option key={r.id} value={r.room_number}>
+              Room {r.room_number}
+            </option>
+          ))}
+        </select>
+
+        <input
+          type="month"
+          className="border p-2 rounded"
+          value={filters.month}
+          onChange={e => setFilters({ ...filters, month: e.target.value })}
+        />
+
         {hasFilters && (
-          <button 
+          <button
             onClick={clearFilters}
-            className="flex-none flex items-center gap-2 px-4 py-2 text-sm font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+            className="flex items-center gap-1 text-sm text-slate-500"
           >
             <X className="w-4 h-4" /> Clear
           </button>
@@ -215,92 +214,85 @@ export default function Rent() {
       </div>
 
       {/* TABLE */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden min-h-[400px]">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider sticky top-0">
+      <div className="bg-white rounded-xl border overflow-hidden">
+        <table className="w-full">
+          <thead className="bg-slate-100 text-sm">
+            <tr>
+              <th className="p-3 text-left">Tenant</th>
+              <th className="p-3">Month</th>
+              <th className="p-3">Amount</th>
+              <th className="p-3">Due</th>
+              <th className="p-3">Status</th>
+              <th className="p-3 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && !isLoading ? (
               <tr>
-                <th className="p-4">Tenant Details</th>
-                <th className="p-4">Month</th>
-                <th className="p-4">Amount</th>
-                <th className="p-4">Due Date</th>
-                <th className="p-4">Status</th>
-                <th className="p-4 text-right">Action</th>
+                <td colSpan="6" className="p-10 text-center text-slate-400">
+                  <Search className="mx-auto mb-2" /> No records found
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {rows.length === 0 && !isLoading ? (
-                <tr><td colSpan="6" className="p-12 text-center text-slate-400 flex flex-col items-center gap-2">
-                  <Search className="w-8 h-8 text-slate-200" />
-                  No records found matching these filters.
-                </td></tr>
-              ) : (
-                rows.map((row, i) => (
-                  <tr key={i} className={`hover:bg-slate-50 transition-colors group ${!row.payment && row.daysOverdue > 0 ? "bg-red-50/50 hover:bg-red-50" : ""}`}>
-                    
-                    {/* Tenant Info */}
-                    <td className="p-4">
-                      <div className="font-bold text-slate-900">{row.tenant.name}</div>
-                      <div className="text-xs text-slate-400 flex items-center gap-1">
-                        <Home className="w-3 h-3" /> Room {row.tenant.room_number}
+            ) : (
+              rows.map((row, i) => (
+                <tr
+                  key={i}
+                  className={`border-t ${
+                    !row.payment && row.daysOverdue > 0
+                      ? "bg-red-50"
+                      : ""
+                  }`}
+                >
+                  <td className="p-3">
+                    <div className="font-semibold">{row.tenant.name}</div>
+                    <div className="text-xs text-slate-400">
+                      Room {row.tenant.room_number}
+                      {!row.tenant.is_active && " • Past"}
+                    </div>
+                  </td>
+
+                  <td className="p-3">{row.month}</td>
+                  <td className="p-3 font-bold">₹{row.amount}</td>
+
+                  <td className="p-3">
+                    {row.dueDate.toLocaleDateString()}
+                    {!row.payment && row.daysOverdue > 0 && (
+                      <div className="text-xs text-red-600">
+                        {row.daysOverdue} days overdue
                       </div>
-                    </td>
+                    )}
+                  </td>
 
-                    {/* Month */}
-                    <td className="p-4 font-medium text-slate-600">
-                      {row.month}
-                    </td>
-
-                    {/* Amount */}
-                    <td className="p-4 font-bold text-slate-700">
-                      ₹{row.amount.toLocaleString()}
-                    </td>
-
-                    {/* Due Date */}
-                    <td className="p-4">
-                      <div className="text-sm text-slate-600">{row.dueDate.toLocaleDateString()}</div>
-                      {!row.payment && row.daysOverdue > 0 && (
-                        <span className="text-[10px] font-bold text-red-500 bg-red-100 px-1.5 py-0.5 rounded ml-[-2px]">
-                          {row.daysOverdue} days overdue
-                        </span>
-                      )}
-                    </td>
-
-                    {/* Status Badge */}
-                    <td className="p-4">
-                      {row.payment ? (
-                        <div className="flex flex-col">
-                          <span className="inline-flex items-center gap-1 text-emerald-600 font-bold text-sm">
-                            <CheckCircle className="w-4 h-4" /> Paid
-                          </span>
-                          <span className="text-[10px] text-slate-400">
-                             on {new Date(row.payment.paid_date).toLocaleDateString()}
-                          </span>
+                  <td className="p-3">
+                    {row.payment ? (
+                      <div className="text-emerald-600 text-sm font-bold">
+                        <CheckCircle className="inline w-4 h-4" /> Paid
+                        <div className="text-xs text-slate-400">
+                          on {new Date(row.payment.paid_date).toLocaleDateString()}
                         </div>
-                      ) : (
-                         <span className={`inline-flex items-center gap-1 text-sm font-bold ${row.daysOverdue > 0 ? "text-red-600" : "text-orange-500"}`}>
-                           <AlertCircle className="w-4 h-4" /> {row.daysOverdue > 0 ? "Overdue" : "Pending"}
-                         </span>
-                      )}
-                    </td>
+                      </div>
+                    ) : (
+                      <div className="text-orange-600 font-bold text-sm">
+                        <AlertCircle className="inline w-4 h-4" /> Pending
+                      </div>
+                    )}
+                  </td>
 
-                    {/* Action Button */}
-                    <td className="p-4 text-right">
-                      {!row.payment && (
-                        <button 
-                          onClick={() => markPaid(row)}
-                          className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm shadow-indigo-200 transition-all active:scale-95"
-                        >
-                          Mark Paid
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                  <td className="p-3 text-right">
+                    {!row.payment && (
+                      <button
+                        onClick={() => markPaid(row)}
+                        className="bg-indigo-600 text-white px-3 py-1 rounded text-sm"
+                      >
+                        Mark Paid
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

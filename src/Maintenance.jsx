@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../supabase";
-import { Wrench, CheckCircle, AlertCircle, Clock, Plus, Home, FileText, Play, Check, X } from "lucide-react";
+import { Wrench, CheckCircle, AlertCircle, Clock, Plus, Home, FileText, Play, Check, User, Search } from "lucide-react";
 
 export default function Maintenance() {
   const [rooms, setRooms] = useState([]);
+  const [tenants, setTenants] = useState([]); // 1. Store tenants
   const [requests, setRequests] = useState([]);
   const [showResolved, setShowResolved] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
   const [form, setForm] = useState({
     room_number: "",
+    tenant_id: "", // 2. Track selected tenant
     issue: ""
   });
 
@@ -18,27 +20,41 @@ export default function Maintenance() {
   async function load() {
     setIsLoading(true);
     const r = await supabase.from("rooms").select("*");
+    // Fetch active tenants to populate the dropdown
+    const t = await supabase.from("tenants").select("*").eq("is_active", true); 
     const q = await supabase.from("maintenance_requests").select("*").order("created_at", { ascending: false });
 
     setRooms(r.data || []);
+    setTenants(t.data || []);
     setRequests(q.data || []);
     setIsLoading(false);
   }
 
   useEffect(() => { load(); }, []);
 
+  /* ================= HELPERS ================= */
+
+  // Filter tenants based on the selected room
+  const roomTenants = tenants.filter(t => t.room_number === form.room_number);
+
   /* ================= ACTIONS ================= */
 
   async function submitRequest() {
     if (!form.room_number || !form.issue) return;
 
+    // Find tenant name to attach to the issue description
+    const tenantName = tenants.find(t => t.id === form.tenant_id)?.name;
+    const finalIssue = tenantName 
+      ? `${form.issue} (Reported by: ${tenantName})` 
+      : form.issue;
+
     await supabase.from("maintenance_requests").insert({
       room_number: form.room_number,
-      issue: form.issue,
+      issue: finalIssue,
       status: "Open"
     });
 
-    setForm({ room_number: "", issue: "" });
+    setForm({ room_number: "", tenant_id: "", issue: "" });
     load();
   }
 
@@ -104,6 +120,8 @@ export default function Maintenance() {
             </h2>
 
             <div className="space-y-4">
+              
+              {/* 1. ROOM SELECT */}
               <div className="relative group">
                 <div className="absolute left-3 top-2.5 text-slate-400 group-focus-within:text-indigo-500 transition-colors">
                   <Home className="w-4 h-4" />
@@ -111,7 +129,7 @@ export default function Maintenance() {
                 <select
                   className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all outline-none font-medium text-slate-700 appearance-none cursor-pointer"
                   value={form.room_number}
-                  onChange={e => setForm({ ...form, room_number: e.target.value })}
+                  onChange={e => setForm({ ...form, room_number: e.target.value, tenant_id: "" })} // Reset tenant when room changes
                 >
                   <option value="">Select Room</option>
                   {rooms.map(r => (
@@ -120,6 +138,33 @@ export default function Maintenance() {
                 </select>
               </div>
 
+              {/* 2. TENANT SELECT (New) */}
+              <div className="relative group">
+                <div className={`absolute left-3 top-2.5 transition-colors ${!form.room_number ? 'text-slate-300' : 'text-slate-400 group-focus-within:text-indigo-500'}`}>
+                  <User className="w-4 h-4" />
+                </div>
+                <select
+                  className={`w-full pl-10 pr-4 py-2 border rounded-lg outline-none font-medium appearance-none transition-all ${
+                    !form.room_number 
+                      ? "bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed" 
+                      : "bg-slate-50 border-slate-200 text-slate-700 cursor-pointer focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  }`}
+                  value={form.tenant_id}
+                  disabled={!form.room_number}
+                  onChange={e => setForm({ ...form, tenant_id: e.target.value })}
+                >
+                  <option value="">Select Tenant (Optional)</option>
+                  {roomTenants.length > 0 ? (
+                    roomTenants.map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))
+                  ) : (
+                    <option disabled>No active tenants in this room</option>
+                  )}
+                </select>
+              </div>
+
+              {/* 3. ISSUE DESCRIPTION */}
               <div className="relative group">
                 <div className="absolute left-3 top-3 text-slate-400 group-focus-within:text-indigo-500 transition-colors">
                   <FileText className="w-4 h-4" />
@@ -175,7 +220,6 @@ export default function Maintenance() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {visibleRequests.length === 0 && !isLoading ? (
-                    /* ----- FIX IS HERE: Use a div inside td ----- */
                     <tr>
                       <td colSpan="4" className="p-12 text-center">
                         <div className="flex flex-col items-center justify-center gap-2 text-slate-400">
@@ -184,7 +228,6 @@ export default function Maintenance() {
                         </div>
                       </td>
                     </tr>
-                    /* ------------------------------------------- */
                   ) : (
                     visibleRequests.map(r => (
                       <tr key={r.id} className="hover:bg-slate-50 transition-colors group">
